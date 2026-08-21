@@ -1,23 +1,27 @@
-using Claims.Auditing;
-using Claims.Controllers;
+using Claims.Application.Commands;
+using Claims.Application.Queries;
+using Claims.Application.Services;
+using Claims.Infrastructure;
+using Claims.Infrastructure.Auditing;
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Driver;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json.Serialization;
 using Testcontainers.MongoDb;
 using Testcontainers.MsSql;
 
-var builder = WebApplication.CreateBuilder(args);
+WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 // Start Testcontainers for SQL Server and MongoDB
-var sqlContainer = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+MsSqlContainer sqlContainer = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
         ? new MsSqlBuilder()
             .WithImage("mcr.microsoft.com/mssql/server:2022-latest")
         : new()
 
     ).Build();
 
-var mongoContainer = new MongoDbBuilder()
+MongoDbContainer mongoContainer = new MongoDbBuilder()
     .WithImage("mongo:latest")
     .Build();
 
@@ -37,16 +41,38 @@ builder.Services.AddDbContext<AuditContext>(options =>
 
 builder.Services.AddDbContext<ClaimsContext>(options =>
 {
-    var client = new MongoClient(mongoContainer.GetConnectionString());
-    var database = client.GetDatabase(builder.Configuration["MongoDb:DatabaseName"]); // Use a default/test database name
+    MongoClient client = new MongoClient(mongoContainer.GetConnectionString());
+    IMongoDatabase database = client.GetDatabase(builder.Configuration["MongoDb:DatabaseName"]); // Use a default/test database name
     options.UseMongoDB(database.Client, database.DatabaseNamespace.DatabaseName);
 });
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    string xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    options.IncludeXmlComments(Path.Combine(AppContext.BaseDirectory, xmlFile));
+});
 
-var app = builder.Build();
+builder.Services.AddScoped<GetClaimsQuery>();
+builder.Services.AddScoped<CreateClaimCommandHandler>();
+builder.Services.AddScoped<GetClaimByIdQuery>();
+builder.Services.AddScoped<DeleteClaimCommandHandler>();
+
+builder.Services.AddScoped<CreateCoverCommandHandler>();
+builder.Services.AddScoped<DeleteCoverCommandHandler>();
+
+builder.Services.AddScoped<GetCoversQuery>();
+builder.Services.AddScoped<GetCoverByIdQuery>();
+
+builder.Services.AddScoped<ComputePremiumService>();
+builder.Services.AddScoped<ComputePremiumQuery>();
+
+
+builder.Services.AddSingleton<IAuditQueue, InMemoryAuditQueue>();
+builder.Services.AddHostedService<AuditBackgroundService>();
+
+WebApplication app = builder.Build();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
@@ -61,10 +87,10 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-using (var scope = app.Services.CreateScope())
+using (IServiceScope scope = app.Services.CreateScope())
 {
-    var context = scope.ServiceProvider.GetRequiredService<AuditContext>();
-    context.Database.Migrate();
+    AuditContext context1 = scope.ServiceProvider.GetRequiredService<AuditContext>();
+    context1.Database.Migrate();
 }
 
 app.Run();

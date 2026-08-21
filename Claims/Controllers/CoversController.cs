@@ -1,98 +1,102 @@
-using Claims.Auditing;
+using Claims.Application.Commands;
+using Claims.Application.Common;
+using Claims.Application.Queries;
+using Claims.Controllers.Common;
+using Claims.Domain;
+using Claims.Domain.DTO;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
-namespace Claims.Controllers;
+namespace Claims.API.Controllers;
 
+/// <summary>
+/// Controller for operations relating to COVER entity.
+/// </summary>
 [ApiController]
 [Route("[controller]")]
 public class CoversController : ControllerBase
 {
-    private readonly ClaimsContext _claimsContext;
-    private readonly ILogger<CoversController> _logger;
-    private readonly Auditer _auditer;
+    private readonly CreateCoverCommandHandler _createCoverHandler;
+    private readonly DeleteCoverCommandHandler _deleteCoverHandler;
+    private readonly GetCoversQuery _getCoversQuery;
+    private readonly GetCoverByIdQuery _getCoverByIdQuery;
+    private readonly ComputePremiumQuery _computePremiumQuery;
 
-    public CoversController(ClaimsContext claimsContext, AuditContext auditContext, ILogger<CoversController> logger)
+    public CoversController(CreateCoverCommandHandler createCoverHandler,
+                            DeleteCoverCommandHandler deleteCoverHandler, 
+                            GetCoversQuery getCoversQuery, 
+                            GetCoverByIdQuery getCoverByIdQuery, 
+                            ComputePremiumQuery computePremiumQuery)
     {
-        _claimsContext = claimsContext;
-        _logger = logger;
-        _auditer = new Auditer(auditContext);
+        _createCoverHandler = createCoverHandler;
+        _deleteCoverHandler = deleteCoverHandler;
+        _getCoversQuery = getCoversQuery;
+        _getCoverByIdQuery = getCoverByIdQuery;
+        _computePremiumQuery = computePremiumQuery;
     }
 
-    [HttpPost("compute")]
-    public async Task<ActionResult> ComputePremiumAsync(DateTime startDate, DateTime endDate, CoverType coverType)
+    /// <summary>
+    /// GET endpoint for computing the premium based on start date, end date, and cover type. Returns the computed premium as a decimal value.
+    /// Nothing is created or stored, so this is a read-only operation.
+    /// </summary>
+    /// <param name="startDate"></param>
+    /// <param name="endDate"></param>
+    /// <param name="coverType"></param>
+    /// <returns>ActionResult&lt;decimal&gt;</returns>
+    [HttpGet("compute")]
+    public ActionResult<decimal> ComputePremium(DateTime startDate, DateTime endDate, CoverType coverType)
     {
-        return Ok(ComputePremium(startDate, endDate, coverType));
+        Result<decimal> result = _computePremiumQuery.Execute(startDate, endDate, coverType);
+
+        return result.ToActionResult();
     }
 
+    /// <summary>
+    /// GET endpoint for retrieving all covers. Returns a list of cover data.
+    /// </summary>
+    /// <returns>ActionResult&lt;IEnumerable&lt;Claims.Domain.DTO.CoverDto&gt;&gt;</returns>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<Cover>>> GetAsync()
+    public async Task<ActionResult<IEnumerable<Claims.Domain.DTO.CoverDto>>> GetAllCoversAsync()
     {
-        var results = await _claimsContext.Covers.ToListAsync();
+        List<CoverDto> results = await _getCoversQuery.ExecuteAsync();
         return Ok(results);
     }
 
+    /// <summary>
+    /// GET endpoint for retrieving a cover by its ID. Returns the cover data if found.
+    /// </summary>
+    /// <param name="id"></param>
+    /// <returns>ActionResult&lt;CoverDto&gt;</returns>
     [HttpGet("{id}")]
-    public async Task<ActionResult<Cover>> GetAsync(string id)
+    public async Task<ActionResult<CoverDto>> GetCoverByIdAsync(string id)
     {
-        var results = await _claimsContext.Covers.ToListAsync();
-        return Ok(results.SingleOrDefault(cover => cover.Id == id));
+        CoverDto? cover = await _getCoverByIdQuery.ExecuteAsync(id);
+
+        return cover is null ? NotFound() : Ok(cover);
     }
 
+    /// <summary>
+    /// POST endpoint for creating a new cover. Returns the created cover data.
+    /// </summary>
+    /// <param name="request"></param>
+    /// <returns>ActionResult&lt;CoverDto&gt;</returns>
     [HttpPost]
-    public async Task<ActionResult> CreateAsync(Cover cover)
+    public async Task<ActionResult<CoverDto>> CreateCoverAsync([FromBody] CreateCoverRequest request)
     {
-        cover.Id = Guid.NewGuid().ToString();
-        cover.Premium = ComputePremium(cover.StartDate, cover.EndDate, cover.Type);
-        _claimsContext.Covers.Add(cover);
-        await _claimsContext.SaveChangesAsync();
-        _auditer.AuditCover(cover.Id, "POST");
-        return Ok(cover);
+        Result<CoverDto> result = await _createCoverHandler.HandleAsync(new CreateCoverCommand(request));
+
+        return result.ToActionResult();
     }
 
+    /// <summary>
+    /// DELETE endpoint for deleting a cover by its ID. Returns no content on successful deletion.
+    /// </summary>
+    /// <param name="id"></param>
+    /// <returns>IActionResult</returns>
     [HttpDelete("{id}")]
-    public async Task DeleteAsync(string id)
+    public async Task<IActionResult> DeleteAsync(string id)
     {
-        _auditer.AuditCover(id, "DELETE");
-        var cover = await _claimsContext.Covers.Where(cover => cover.Id == id).SingleOrDefaultAsync();
-        if (cover is not null)
-        {
-            _claimsContext.Covers.Remove(cover);
-            await _claimsContext.SaveChangesAsync();
-        }
-    }
+        Result result = await _deleteCoverHandler.HandleAsync(new DeleteCoverCommand(id));
 
-    private decimal ComputePremium(DateTime startDate, DateTime endDate, CoverType coverType)
-    {
-        var multiplier = 1.3m;
-        if (coverType == CoverType.Yacht)
-        {
-            multiplier = 1.1m;
-        }
-
-        if (coverType == CoverType.PassengerShip)
-        {
-            multiplier = 1.2m;
-        }
-
-        if (coverType == CoverType.Tanker)
-        {
-            multiplier = 1.5m;
-        }
-
-        var premiumPerDay = 1250 * multiplier;
-        var insuranceLength = (endDate - startDate).TotalDays;
-        var totalPremium = 0m;
-
-        for (var i = 0; i < insuranceLength; i++)
-        {
-            if (i < 30) totalPremium += premiumPerDay;
-            if (i < 180 && coverType == CoverType.Yacht) totalPremium += premiumPerDay - premiumPerDay * 0.05m;
-            else if (i < 180) totalPremium += premiumPerDay - premiumPerDay * 0.02m;
-            if (i < 365 && coverType != CoverType.Yacht) totalPremium += premiumPerDay - premiumPerDay * 0.03m;
-            else if (i < 365) totalPremium += premiumPerDay - premiumPerDay * 0.08m;
-        }
-
-        return totalPremium;
+        return result.ToNoContentResult();
     }
 }

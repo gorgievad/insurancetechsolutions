@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Claims.Application.Common;
+using Claims.Controllers.Common;
 using Claims.Domain;
 using Claims.Domain.DTO;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -9,12 +11,12 @@ using Xunit;
 
 namespace Claims.Tests
 {
-    public class ClaimsControllerTests
+    public class CoversControllerTests
     {
         private static readonly JsonSerializerOptions SerializerOptions = CreateSerializerOptions();
 
         [Fact]
-        public async Task Get_Claims()
+        public async Task PostCover_ReturnsTheCreatedCoverWithAPremium()
         {
             // Arrange
             using WebApplicationFactory<Program> application = new WebApplicationFactory<Program>()
@@ -23,21 +25,35 @@ namespace Claims.Tests
 
             HttpClient client = application.CreateClient();
 
+            CreateCoverRequest request = new CreateCoverRequest
+            {
+                StartDate = DateTime.UtcNow.Date,
+                EndDate = DateTime.UtcNow.Date.AddDays(30),
+                Type = CoverType.Yacht
+            };
+
             // Act
-            HttpResponseMessage response = await client.GetAsync("/Claims", TestContext.Current.CancellationToken);
+            HttpResponseMessage response = await client.PostAsJsonAsync(
+                "/Covers",
+                request,
+                SerializerOptions,
+                TestContext.Current.CancellationToken);
 
             // Assert
             response.EnsureSuccessStatusCode();
 
-            List<ClaimDto>? claims = await response.Content.ReadFromJsonAsync<List<ClaimDto>>(
+            CoverDto? cover = await response.Content.ReadFromJsonAsync<CoverDto>(
                 SerializerOptions,
                 TestContext.Current.CancellationToken);
 
-            Assert.NotNull(claims);
+            Assert.NotNull(cover);
+            Assert.False(string.IsNullOrEmpty(cover.Id));
+            Assert.Equal(CoverType.Yacht, cover.Type);
+            Assert.Equal(30 * 1375m, cover.Premium);
         }
 
         [Fact]
-        public async Task PostClaim_ReturnsTheCreatedClaim()
+        public async Task DeleteCoverWithARelatedClaim_ReturnsConflict()
         {
             // Arrange
             using WebApplicationFactory<Program> application = new WebApplicationFactory<Program>()
@@ -47,7 +63,7 @@ namespace Claims.Tests
             HttpClient client = application.CreateClient();
             CoverDto cover = await CreateCoverAsync(client);
 
-            CreateClaimRequest request = new CreateClaimRequest
+            CreateClaimRequest claimRequest = new CreateClaimRequest
             {
                 CoverId = cover.Id,
                 Created = cover.StartDate.AddDays(1),
@@ -56,43 +72,28 @@ namespace Claims.Tests
                 DamageCost = 5_000m
             };
 
-            // Act
-            HttpResponseMessage response = await client.PostAsJsonAsync(
+            HttpResponseMessage claimResponse = await client.PostAsJsonAsync(
                 "/Claims",
-                request,
+                claimRequest,
                 SerializerOptions,
                 TestContext.Current.CancellationToken);
 
-            // Assert
-            response.EnsureSuccessStatusCode();
-
-            ClaimDto? claim = await response.Content.ReadFromJsonAsync<ClaimDto>(
-                SerializerOptions,
-                TestContext.Current.CancellationToken);
-
-            Assert.NotNull(claim);
-            Assert.Equal(cover.Id, claim.CoverId);
-            Assert.Equal(5_000m, claim.DamageCost);
-            Assert.False(string.IsNullOrEmpty(claim.Id));
-        }
-
-        [Fact]
-        public async Task GetClaimByUnknownId_ReturnsNotFound()
-        {
-            // Arrange
-            using WebApplicationFactory<Program> application = new WebApplicationFactory<Program>()
-                .WithWebHostBuilder(_ =>
-                {});
-
-            HttpClient client = application.CreateClient();
+            claimResponse.EnsureSuccessStatusCode();
 
             // Act
-            HttpResponseMessage response = await client.GetAsync(
-                $"/Claims/{Guid.NewGuid()}",
+            HttpResponseMessage response = await client.DeleteAsync(
+                $"/Covers/{cover.Id}",
                 TestContext.Current.CancellationToken);
 
             // Assert
-            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+            ErrorResponse? error = await response.Content.ReadFromJsonAsync<ErrorResponse>(
+                SerializerOptions,
+                TestContext.Current.CancellationToken);
+
+            Assert.NotNull(error);
+            Assert.Equal(ResultErrorCodes.CoverHasClaims, error.Code);
         }
 
         private static async Task<CoverDto> CreateCoverAsync(HttpClient client)
