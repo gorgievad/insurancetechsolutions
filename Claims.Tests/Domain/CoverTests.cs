@@ -1,5 +1,5 @@
-using Claims.Application.Common;
 using Claims.Domain;
+using Claims.Domain.Common;
 using Xunit;
 
 namespace Claims.Tests.Domain
